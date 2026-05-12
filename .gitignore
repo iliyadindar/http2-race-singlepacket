@@ -1,0 +1,25 @@
+# Build output
+race
+/race
+*.exe
+*.test
+*.out
+
+# Go workspace files
+go.work
+go.work.sum
+
+# IDE
+.vscode/
+.idea/
+*.swp
+
+# OS
+.DS_Store
+Thumbs.db
+
+# Local secrets — NEVER commit cookies
+.env
+*.local
+cookie.txt
+
