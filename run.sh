@@ -82,10 +82,27 @@ RACE_BAL_REGEX="${RACE_BAL_REGEX:-\"balance\":(\\d+)}"
 TARGET_BAL="${TARGET_BAL:-400}"
 MAX_ATTEMPTS="${MAX_ATTEMPTS:-15}"
 
-RACE_BIN="${RACE_BIN:-$(dirname "$(readlink -f "$0")")/race}"
+SCRIPT_DIR="$(dirname "$(readlink -f "$0")")"
+RACE_BIN="${RACE_BIN:-$SCRIPT_DIR/race}"
+RACE_SRC="$SCRIPT_DIR/race.go"
+
+rebuild_race() {
+    if ! command -v go >/dev/null; then
+        echo "[!] need 'go' on PATH to rebuild race binary" >&2
+        return 1
+    fi
+    echo "[*] rebuilding race binary..." >&2
+    (cd "$SCRIPT_DIR" && go build -o "$RACE_BIN" race.go) || return 1
+}
+
 if [[ ! -x "$RACE_BIN" ]]; then
-    echo "[!] race binary not found at $RACE_BIN — run 'go build' first" >&2
-    exit 1
+    rebuild_race || { echo "[!] race binary missing and rebuild failed" >&2; exit 1; }
+fi
+
+# Detect a stale binary missing the new flags this script depends on.
+if ! "$RACE_BIN" -h 2>&1 | grep -q -- '-path'; then
+    echo "[!] race binary at $RACE_BIN is out of date (missing -path)." >&2
+    rebuild_race || { echo "[!] rebuild failed — run 'go build -o race race.go' manually" >&2; exit 1; }
 fi
 
 # best-effort CPU performance tuning (silent if unavailable / no root)
