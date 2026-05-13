@@ -37,12 +37,14 @@ for attempt in $(seq 1 "$MAX_ATTEMPTS"); do
     echo
     echo "================ attempt $attempt / $MAX_ATTEMPTS ================"
 
-    # 1. sign up — fresh account, fresh cookie
+    # 1. sign up — fresh account, fresh cookie. Random name so the lab
+    # doesn't reuse a previously-redeemed user.
+    USERNAME="u$(head -c 8 /dev/urandom | od -An -tx1 | tr -d ' \n')"
     hdrs="$(mktemp)"
     curl -sk -o /dev/null -D "$hdrs" \
         -X POST "$BASE/signup" \
         -H 'Content-Type: application/x-www-form-urlencoded' \
-        --data 'name=a'
+        --data "name=$USERNAME"
     SESSION="$(extract_cookie "$hdrs")"
     rm -f "$hdrs"
     if [[ -z "$SESSION" ]]; then
@@ -50,7 +52,7 @@ for attempt in $(seq 1 "$MAX_ATTEMPTS"); do
         sleep 1
         continue
     fi
-    echo "[*] cookie: session=${SESSION:0:32}..."
+    echo "[*] user=$USERNAME  cookie=${SESSION:0:32}..."
 
     # 2. fire the race
     "${RUN_RACE[@]}" \
