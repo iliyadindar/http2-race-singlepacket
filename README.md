@@ -88,46 +88,87 @@ Sample output:
 
 ## Automated end-to-end: `run.sh`
 
-If your target is a pwnbox-style lab where you can sign up disposable
-accounts and the flag endpoint is gated by balance, use the bundled
-`run.sh` to loop signup → race → flag-check until you win.
+If your target is a lab where you can sign up disposable accounts and a
+"win" endpoint is gated by some balance/counter that the race
+increments, use the bundled `run.sh` to loop signup → race → success
+check until you win.
 
 ```sh
-./run.sh 85dbd3eba2a9.pwnbox-lab.com
+./run.sh <hostname>
 ```
 
 Each attempt it:
 
-1. `POST /signup` (body `name=a`) and pulls the `session=` cookie from
-   `Set-Cookie`.
+1. `POST` the signup endpoint with a randomised name and grabs the
+   session cookie from `Set-Cookie`.
 2. Runs `race` with the best-known config (`-conns=20 -streams=4
    -ping=false -preload-ms=5`), pinned to CPU 0 via `taskset` if
    available.
-3. `GET /flag` with the cookie. If the response has `balance >= 400` and
-   no `"error"` field, prints the flag body and exits.
-4. Otherwise `POST /logout` and loops with a fresh signup.
+3. Hits the success endpoint with the cookie. If the response shows a
+   balance ≥ `TARGET_BAL` and contains no error marker, prints the body
+   and exits.
+4. Otherwise logs out and loops with a fresh signup.
 
-Overridable env vars: `MAX_ATTEMPTS` (default 15), `CONNS`, `STREAMS`,
-`PRELOAD_MS`, `TARGET_BAL`. The script also tries to set the CPU governor
-to `performance` on start (silent no-op if not available).
+**Every endpoint, body, and parsing pattern is overridable via env vars.**
+The defaults match a "Stampede"-class lab (`/signup` with `name=…`,
+`/redeem` race, `/flag` balance gate) but the script works against any
+equivalent target by changing the env vars below:
+
+| Var | Default | Meaning |
+|---|---|---|
+| `SIGNUP_PATH` | `/signup` | path that creates a session |
+| `SIGNUP_BODY` | `name=__USER__` | request body; `__USER__` is replaced per attempt with a random hex name |
+| `SIGNUP_CT` | `application/x-www-form-urlencoded` | `Content-Type` of the signup body |
+| `FLAG_PATH` | `/flag` | success-check endpoint |
+| `FLAG_METHOD` | `GET` | HTTP method for the success check |
+| `LOGOUT_PATH` | `/logout` | leave blank to skip logout between attempts |
+| `LOGOUT_METHOD` | `POST` | |
+| `RACE_PATH` | `/redeem` | endpoint to race against |
+| `RACE_METHOD` | `POST` | HTTP method for the racing requests |
+| `COOKIE_NAME` | `session` | cookie name to extract from `Set-Cookie` |
+| `BAL_REGEX` | `"balance":[0-9]+` | regex applied to `/flag` body; first digit run inside the match is the balance |
+| `ERROR_MARKER` | `"error"` | substring that means "not yet a win" |
+| `WIN_MARKER` | `"ok":true` | passed to `race -win-marker` |
+| `RACE_BAL_REGEX` | `"balance":(\d+)` | passed to `race -balance-regex`, must have one capture group |
+| `TARGET_BAL` | `400` | win threshold |
+| `CONNS`, `STREAMS`, `PRELOAD_MS` | `20`, `4`, `5` | race tuning |
+| `USE_PING` | `false` | set `true` for `race -ping` |
+| `PORT` | `443` | TCP port |
+| `SCHEME` | `https` | URL scheme for curl |
+| `MAX_ATTEMPTS` | `15` | how many signup→race→check loops to run |
+| `RACE_BIN` | `./race` next to the script | path to the compiled race binary |
+
+Example targeting a different shape of lab:
+
+```sh
+SIGNUP_PATH=/api/register \
+SIGNUP_BODY='{"username":"__USER__"}' SIGNUP_CT=application/json \
+RACE_PATH=/api/buy FLAG_PATH=/api/me \
+BAL_REGEX='"credits":[0-9]+' RACE_BAL_REGEX='"credits":(\d+)' \
+WIN_MARKER='"purchased":true' \
+TARGET_BAL=1000 \
+./run.sh some-lab.example.com
+```
 
 ---
 
-## Flags
+## Flags (`race`)
 
 | Flag | Default | Meaning |
 |---|---|---|
-| `-host` | `target.example.com` | Target hostname (no scheme, no path) |
-| `-cookie` | (placeholder) | Full cookie header value, e.g. `session=abc123` |
+| `-host` | *(required)* | Target hostname (no scheme, no path) |
+| `-cookie` | *(empty)* | Full cookie header value, e.g. `session=abc123` |
+| `-path` | `/redeem` | HTTP/2 `:path` to race |
+| `-method` | `POST` | HTTP method for racing requests |
+| `-port` | `443` | TCP port to connect on |
 | `-conns` | `1` | Number of parallel TCP connections |
 | `-streams` | `100` | HTTP/2 streams per connection (server cap is usually 100) |
 | `-ping` | `true` | Use PING+ACK to sync with the server (deterministic). Set `-ping=false` to fall back to a fixed sleep. |
 | `-preload-ms` | `50` | Sleep before firing (only used when `-ping=false`) |
 | `-target` | `405` | Stop once any response reports `balance >= target` |
 | `-rounds` | `3` | Max attempts before giving up |
-
-The endpoint hit is hard-coded to `/redeem` in `race.go` — edit the `path`
-variable if your target uses something else.
+| `-balance-regex` | `"balance":(\d+)` | Regex (one capture group) used to read the numeric balance from each response body |
+| `-win-marker` | `"ok":true` | Substring that marks a winning race in a response body |
 
 ---
 

