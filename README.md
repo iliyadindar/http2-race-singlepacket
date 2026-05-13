@@ -86,6 +86,33 @@ Sample output:
 
 ---
 
+## Automated end-to-end: `run.sh`
+
+If your target is a pwnbox-style lab where you can sign up disposable
+accounts and the flag endpoint is gated by balance, use the bundled
+`run.sh` to loop signup → race → flag-check until you win.
+
+```sh
+./run.sh 85dbd3eba2a9.pwnbox-lab.com
+```
+
+Each attempt it:
+
+1. `POST /signup` (body `name=a`) and pulls the `session=` cookie from
+   `Set-Cookie`.
+2. Runs `race` with the best-known config (`-conns=20 -streams=4
+   -ping=false -preload-ms=5`), pinned to CPU 0 via `taskset` if
+   available.
+3. `GET /flag` with the cookie. If the response has `balance >= 400` and
+   no `"error"` field, prints the flag body and exits.
+4. Otherwise `POST /logout` and loops with a fresh signup.
+
+Overridable env vars: `MAX_ATTEMPTS` (default 15), `CONNS`, `STREAMS`,
+`PRELOAD_MS`, `TARGET_BAL`. The script also tries to set the CPU governor
+to `performance` on start (silent no-op if not available).
+
+---
+
 ## Flags
 
 | Flag | Default | Meaning |
