@@ -27,9 +27,11 @@ import (
 	"fmt"
 	"net"
 	"regexp"
+	"runtime"
 	"sort"
 	"strconv"
 	"sync"
+	"sync/atomic"
 	"time"
 
 	"golang.org/x/net/http2"
@@ -327,19 +329,30 @@ func raceMulti(nConns, streams int, preloadWait time.Duration, usePing bool) []r
 		time.Sleep(preloadWait)
 	}
 
-	// FIRE — close(ready) releases every goroutine simultaneously.
-	ready := make(chan struct{})
+	// FIRE — arrive-barrier ensures every goroutine is parked on the
+	// atomic spin before we release. Each goroutine owns its own OS
+	// thread (LockOSThread) so the Go scheduler can't interleave them
+	// mid-Write. Atomic spin beats channel-recv by ~µs of wakeup jitter.
+	var fire uint32
+	var arrived int32
 	var fwg sync.WaitGroup
 	for _, h := range good {
 		fwg.Add(1)
 		go func(h *Handle) {
+			runtime.LockOSThread()
+			defer runtime.UnlockOSThread()
 			defer fwg.Done()
-			<-ready
+			atomic.AddInt32(&arrived, 1)
+			for atomic.LoadUint32(&fire) == 0 {
+				runtime.Gosched()
+			}
 			h.conn.Write(h.trigger)
 		}(h)
 	}
-	time.Sleep(2 * time.Millisecond) // park goroutines on <-ready
-	close(ready)
+	for atomic.LoadInt32(&arrived) < int32(len(good)) {
+		runtime.Gosched()
+	}
+	atomic.StoreUint32(&fire, 1)
 	fwg.Wait()
 
 	// COLLECT in parallel.
@@ -396,6 +409,7 @@ func summarize(results []result, dt time.Duration, round int) (int, int) {
 // ─── Main ────────────────────────────────────────────────────────────
 
 func main() {
+	runtime.GOMAXPROCS(runtime.NumCPU())
 	nConns := flag.Int("conns", 1, "parallel TCP connections (1=tightest, recommended)")
 	streams := flag.Int("streams", 100, "streams per connection (server cap=100)")
 	target := flag.Int("target", 405, "stop once balance >= target")
